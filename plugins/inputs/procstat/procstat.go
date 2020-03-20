@@ -22,18 +22,18 @@ var (
 type PID int32
 
 type Procstat struct {
-	PidFinder   string `toml:"pid_finder"`
-	PidFile     string `toml:"pid_file"`
-	Exe         string
-	Pattern     string
-	Prefix      string
-	CmdLineTag  bool `toml:"cmdline_tag"`
-	ProcessName string
-	User        string
-	SystemdUnit string
-	CGroup      string `toml:"cgroup"`
-	PidTag      bool
-	WinService  string `toml:"win_service"`
+	PidFinder    string `toml:"pid_finder"`
+	PidFile      string `toml:"pid_file"`
+	Exe          string
+	Pattern      string
+	Prefix       string
+	CmdLineTag   bool `toml:"cmdline_tag"`
+	ProcessName  string
+	User         string
+	SystemdUnits []string
+	CGroup       string `toml:"cgroup"`
+	PidTag       bool
+	WinService   string `toml:"win_service"`
 
 	finder PIDFinder
 
@@ -106,7 +106,7 @@ func (p *Procstat) Gather(acc telegraf.Accumulator) error {
 		p.createProcess = defaultProcess
 	}
 
-	pids, tags, err := p.findPids(acc)
+	pids, tags, err := p.findPids()
 	if err != nil {
 		fields := map[string]interface{}{
 			"pid_count":   0,
@@ -351,7 +351,7 @@ func (p *Procstat) getPIDFinder() (PIDFinder, error) {
 }
 
 // Get matching PIDs and their initial tags
-func (p *Procstat) findPids(acc telegraf.Accumulator) ([]PID, map[string]string, error) {
+func (p *Procstat) findPids() ([]PID, map[string]string, error) {
 	var pids []PID
 	tags := make(map[string]string)
 	var err error
@@ -373,9 +373,13 @@ func (p *Procstat) findPids(acc telegraf.Accumulator) ([]PID, map[string]string,
 	} else if p.User != "" {
 		pids, err = f.Uid(p.User)
 		tags = map[string]string{"user": p.User}
-	} else if p.SystemdUnit != "" {
+	} else if len(p.SystemdUnits) != 0 {
 		pids, err = p.systemdUnitPIDs()
-		tags = map[string]string{"systemd_unit": p.SystemdUnit}
+		for _, value := range p.SystemdUnits {
+			tags_key := "systemd_unit" + value
+			tags = map[string]string{tags_key: value}
+		}
+		//tags = map[string]string{"systemd_unit": p.SystemdUnit}
 	} else if p.CGroup != "" {
 		pids, err = p.cgroupPIDs()
 		tags = map[string]string{"cgroup": p.CGroup}
@@ -394,27 +398,29 @@ var execCommand = exec.Command
 
 func (p *Procstat) systemdUnitPIDs() ([]PID, error) {
 	var pids []PID
-	cmd := execCommand("systemctl", "show", p.SystemdUnit)
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
-	for _, line := range bytes.Split(out, []byte{'\n'}) {
-		kv := bytes.SplitN(line, []byte{'='}, 2)
-		if len(kv) != 2 {
-			continue
-		}
-		if !bytes.Equal(kv[0], []byte("MainPID")) {
-			continue
-		}
-		if len(kv[1]) == 0 || bytes.Equal(kv[1], []byte("0")) {
-			return nil, nil
-		}
-		pid, err := strconv.Atoi(string(kv[1]))
+	for _, systemunit := range p.SystemdUnits {
+		cmd := execCommand("systemctl", "show", systemunit)
+		out, err := cmd.Output()
 		if err != nil {
-			return nil, fmt.Errorf("invalid pid '%s'", kv[1])
+			return nil, err
 		}
-		pids = append(pids, PID(pid))
+		for _, line := range bytes.Split(out, []byte{'\n'}) {
+			kv := bytes.SplitN(line, []byte{'='}, 2)
+			if len(kv) != 2 {
+				continue
+			}
+			if !bytes.Equal(kv[0], []byte("MainPID")) {
+				continue
+			}
+			if len(kv[1]) == 0 || bytes.Equal(kv[1], []byte("0")) {
+				return nil, nil
+			}
+			pid, err := strconv.Atoi(string(kv[1]))
+			if err != nil {
+				return nil, fmt.Errorf("invalid pid '%s'", kv[1])
+			}
+			pids = append(pids, PID(pid))
+		}
 	}
 	return pids, nil
 }
